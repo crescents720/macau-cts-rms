@@ -409,6 +409,117 @@ h2 {
   padding: 18px;
 }
 
+.competitorWorkspace {
+  margin-top: 28px;
+}
+
+.competitorControls {
+  background: #ffffff;
+  border: 1px solid #ddd7c9;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.competitorMetrics {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.competitorGrid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.1fr);
+  margin-top: 14px;
+}
+
+.competitorPanel {
+  min-height: 260px;
+  padding: 16px;
+}
+
+.panelHeader.compact {
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.competitorHotelList,
+.compactList,
+.mappingList,
+.rateObservationList {
+  display: grid;
+  gap: 8px;
+}
+
+.competitorHotelButton,
+.compactListItem {
+  background: #fbfaf6;
+  border: 1px solid #e4dfd4;
+  border-radius: 6px;
+  color: #26322e;
+  cursor: pointer;
+  min-height: 58px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.competitorHotelButton.selected,
+.compactListItem.selected {
+  border-color: #357a68;
+  box-shadow: inset 0 0 0 1px #357a68;
+}
+
+.competitorHotelButton strong,
+.competitorHotelButton span,
+.compactListItem strong,
+.compactListItem span {
+  display: block;
+}
+
+.competitorHotelButton span,
+.compactListItem span,
+.mappingCard span,
+.rateObservation span {
+  color: #6c675d;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.inlineForm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.inlineForm input {
+  background: #ffffff;
+  border: 1px solid #d8d2c6;
+  border-radius: 6px;
+  color: #26322e;
+  flex: 1 1 180px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.mappingCard,
+.rateObservation {
+  align-items: center;
+  background: #fbfaf6;
+  border: 1px solid #e4dfd4;
+  border-radius: 6px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+
+.rateObservation {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) minmax(100px, 0.8fr) auto;
+}
+
 .eventToolbar {
   display: flex;
   flex-wrap: wrap;
@@ -735,7 +846,9 @@ h2 {
 
   .hotelStrip,
   .metrics,
-  .analysisGrid {
+  .analysisGrid,
+  .competitorMetrics,
+  .competitorGrid {
     grid-template-columns: 1fr;
   }
 

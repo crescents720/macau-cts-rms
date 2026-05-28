@@ -54,6 +54,8 @@ py -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pip install -r requirements-db.txt
+python scripts\apply_event_schema.py
+python scripts\apply_competitor_schema.py
 uvicorn app.main:app --port 8003
 ```
 

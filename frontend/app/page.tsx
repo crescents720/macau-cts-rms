@@ -1,6 +1,16 @@
 "use client";
 
-import { CalendarDays, Check, Hotel, Pencil, Plus, RefreshCw, SearchCheck, X } from "lucide-react";
+import {
+  CalendarDays,
+  Check,
+  Hotel,
+  Pencil,
+  Plus,
+  RefreshCw,
+  SearchCheck,
+  Store,
+  X
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Area,
@@ -42,6 +52,9 @@ type Recommendation = {
   event_adjustment_amount: number;
   event_names: string[];
   event_logic: string[];
+  competitor_market_rate: number | null;
+  competitor_adjustment_amount: number;
+  competitor_logic: string[];
   change_percent: number;
   confidence: number;
   reasons: string[];
@@ -127,6 +140,53 @@ type EventCollectionCandidate = {
   notes: string | null;
 };
 
+type CompetitorHotelRecord = {
+  id: string;
+  name: string;
+  district: string;
+  ctrip_hotel_id: string | null;
+  ctrip_url: string | null;
+  active: boolean;
+  room_type_count: number;
+};
+
+type CompetitorRoomTypeRecord = {
+  id: number;
+  competitor_hotel_id: string;
+  competitor_hotel_name: string;
+  name: string;
+  ctrip_room_id: string | null;
+  normalized_name: string | null;
+  active: boolean;
+};
+
+type CompetitorMappingRecord = {
+  id: number;
+  hotel_id: string;
+  room_type_id: string;
+  room_type_name: string;
+  competitor_room_type_id: number;
+  competitor_hotel_id: string;
+  competitor_hotel_name: string;
+  competitor_room_type_name: string;
+  priority: number;
+  weight: number;
+  notes: string | null;
+};
+
+type CompetitorRateObservationRecord = {
+  id: number;
+  competitor_room_type_id: number;
+  competitor_hotel_name: string;
+  competitor_room_type_name: string;
+  stay_date: string;
+  price: number;
+  currency: string;
+  source: string;
+  source_url: string | null;
+  collected_at: string;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8003";
 
 const predictionWindows = [
@@ -141,8 +201,12 @@ const eventTypes = ["concert", "grand_prix", "exhibition", "festival", "sports",
 const impactLevels = ["minor", "medium", "major", "citywide"];
 const eventStatuses = ["candidate", "confirmed", "rejected", "expired"];
 
+function todayString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 function defaultEventForm(): EventFormState {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayString();
   return {
     name: "",
     event_type: "concert",
@@ -165,6 +229,22 @@ const copy = {
   ninetyDayAdvice: "90\u5929\u5efa\u8bae",
   trend: "\u4ef7\u683c\u8d70\u52bf",
   eventReview: "\u4e8b\u4ef6\u5ba1\u6838",
+  competitorPricing: "\u7ade\u54c1\u4ef7\u683c",
+  competitorHint: "\u914d\u7f6e\u6211\u65b9\u623f\u578b\u4e0e\u7ade\u54c1\u623f\u578b\u7684\u6620\u5c04\uff0c\u5e76\u7ba1\u7406\u7ade\u54c1\u4ef7\u683c\u89c2\u6d4b",
+  competitorHotels: "\u7ade\u54c1\u9152\u5e97",
+  competitorRoomTypes: "\u7ade\u54c1\u623f\u578b",
+  addCompetitorRoom: "\u65b0\u589e\u7ade\u54c1\u623f\u578b",
+  addMapping: "\u6dfb\u52a0\u6620\u5c04",
+  mappings: "\u623f\u578b\u6620\u5c04",
+  rateObservations: "\u4ef7\u683c\u89c2\u6d4b",
+  addRate: "\u8bb0\u5f55\u4ef7\u683c",
+  competitorHotel: "\u7ade\u54c1\u9152\u5e97",
+  competitorRoom: "\u7ade\u54c1\u623f\u578b",
+  stayDate: "\u5165\u4f4f\u65e5\u671f",
+  price: "\u4ef7\u683c",
+  source: "\u6765\u6e90",
+  noMappings: "\u5f53\u524d\u623f\u578b\u8fd8\u6ca1\u6709\u7ade\u54c1\u6620\u5c04",
+  noRates: "\u6682\u65e0\u7ade\u54c1\u4ef7\u683c\u89c2\u6d4b",
   eventReviewHint: "\u5019\u9009\u4e8b\u4ef6\u9700\u8981\u786e\u8ba4\u540e\u624d\u4f1a\u8fdb\u5165\u62a5\u4ef7\u6a21\u578b",
   addEvent: "\u65b0\u589e\u4e8b\u4ef6",
   editEvent: "\u7f16\u8f91\u4e8b\u4ef6",
@@ -216,6 +296,9 @@ const copy = {
   eventPremium: "\u4e8b\u4ef6\u6ea2\u4ef7",
   eventAdjustment: "\u4e8b\u4ef6\u8c03\u6574\u91d1\u989d",
   eventLogic: "\u4e8b\u4ef6\u8c03\u4ef7\u903b\u8f91",
+  competitorLogic: "\u7ade\u54c1\u4ef7\u683c\u903b\u8f91",
+  competitorMarketRate: "\u7ade\u54c1\u4e2d\u4f4d\u4ef7",
+  competitorAdjustment: "\u7ade\u54c1\u8c03\u6574",
   noEventPremium: "\u5f53\u65e5\u65e0\u5185\u5730/\u6fb3\u95e8\u91cd\u5927\u5047\u671f\u6ea2\u4ef7",
   currentRate: "\u57fa\u7840\u623f\u4ef7",
   baseRateLogic: "\u57fa\u7840\u623f\u4ef7\u903b\u8f91",
@@ -230,7 +313,7 @@ const copy = {
 };
 
 export default function Dashboard() {
-  const [activeView, setActiveView] = useState<"pricing" | "events">("pricing");
+  const [activeView, setActiveView] = useState<"pricing" | "events" | "competitors">("pricing");
   const [hotels, setHotels] = useState<HotelRecord[]>([]);
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([]);
   const [recommendations, setRecommendations] = useState<Recommendation[]>([]);
@@ -252,6 +335,16 @@ export default function Dashboard() {
   const [collectionText, setCollectionText] = useState("");
   const [collectionCandidates, setCollectionCandidates] = useState<EventCollectionCandidate[]>([]);
   const [isCollecting, setIsCollecting] = useState(false);
+  const [competitorHotels, setCompetitorHotels] = useState<CompetitorHotelRecord[]>([]);
+  const [competitorRoomTypes, setCompetitorRoomTypes] = useState<CompetitorRoomTypeRecord[]>([]);
+  const [competitorMappings, setCompetitorMappings] = useState<CompetitorMappingRecord[]>([]);
+  const [competitorRates, setCompetitorRates] = useState<CompetitorRateObservationRecord[]>([]);
+  const [selectedCompetitorHotelId, setSelectedCompetitorHotelId] = useState("");
+  const [selectedCompetitorRoomTypeId, setSelectedCompetitorRoomTypeId] = useState("");
+  const [newCompetitorRoomName, setNewCompetitorRoomName] = useState("");
+  const [newRateDate, setNewRateDate] = useState(todayString());
+  const [newRatePrice, setNewRatePrice] = useState("");
+  const [isCompetitorLoading, setIsCompetitorLoading] = useState(false);
 
   const selectedRoomType = roomTypes.find((room) => room.id === selectedRoomTypeId);
   const activeHotel = useMemo(
@@ -271,6 +364,13 @@ export default function Dashboard() {
     source: item
   }));
   const xAxisInterval = selectedDays >= 90 ? 6 : selectedDays >= 60 ? 4 : selectedDays >= 30 ? 2 : 0;
+  const filteredCompetitorRoomTypes = competitorRoomTypes.filter(
+    (roomType) => roomType.competitor_hotel_id === selectedCompetitorHotelId
+  );
+  const competitorMarketAverage = Math.round(
+    competitorRates.reduce((total, rate) => total + rate.price, 0) /
+      Math.max(competitorRates.length, 1)
+  );
 
   const averageRecommendedRate = Math.round(
     recommendations.reduce((total, day) => total + day.recommended_rate, 0) /
@@ -314,7 +414,10 @@ export default function Dashboard() {
       loadEvents();
       loadVenues();
     }
-  }, [activeView, eventStatus]);
+    if (activeView === "competitors") {
+      loadCompetitorData();
+    }
+  }, [activeView, eventStatus, selectedRoomTypeId]);
 
   function refreshRecommendations() {
     setIsRefreshing(true);
@@ -464,6 +567,111 @@ export default function Dashboard() {
       .finally(() => setIsCollecting(false));
   }
 
+  function loadCompetitorData() {
+    setIsCompetitorLoading(true);
+    Promise.all([
+      fetch(`${apiBase}/competitors/hotels`).then((response) => response.json()),
+      fetch(`${apiBase}/competitors/room-types`).then((response) => response.json()),
+      fetch(`${apiBase}/competitors/mappings?hotel_id=${selectedHotelId}&room_type_id=${selectedRoomTypeId}`).then((response) =>
+        response.json()
+      ),
+      fetch(`${apiBase}/competitors/rates?room_type_id=${selectedRoomTypeId}&days=${selectedDays}`).then((response) =>
+        response.json()
+      )
+    ])
+      .then(([hotelData, roomTypeData, mappingData, rateData]) => {
+        setCompetitorHotels(hotelData);
+        setCompetitorRoomTypes(roomTypeData);
+        setCompetitorMappings(mappingData);
+        setCompetitorRates(rateData);
+        setSelectedCompetitorHotelId((current) => current || hotelData[0]?.id || "");
+      })
+      .catch(() => {
+        setCompetitorHotels([]);
+        setCompetitorRoomTypes([]);
+        setCompetitorMappings([]);
+        setCompetitorRates([]);
+      })
+      .finally(() => setIsCompetitorLoading(false));
+  }
+
+  function createCompetitorRoomType() {
+    if (!selectedCompetitorHotelId || !newCompetitorRoomName.trim()) {
+      return;
+    }
+    fetch(`${apiBase}/competitors/room-types`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        competitor_hotel_id: selectedCompetitorHotelId,
+        name: newCompetitorRoomName.trim()
+      })
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("competitor room type create failed");
+        }
+        setNewCompetitorRoomName("");
+        loadCompetitorData();
+      })
+      .catch(loadCompetitorData);
+  }
+
+  function createCompetitorMapping() {
+    if (!selectedRoomTypeId || !selectedCompetitorRoomTypeId) {
+      return;
+    }
+    fetch(`${apiBase}/competitors/mappings`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hotel_id: selectedHotelId,
+        room_type_id: selectedRoomTypeId,
+        competitor_room_type_id: Number(selectedCompetitorRoomTypeId),
+        priority: 1,
+        weight: 1
+      })
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("competitor mapping create failed");
+        }
+        loadCompetitorData();
+      })
+      .catch(loadCompetitorData);
+  }
+
+  function deleteCompetitorMapping(mappingId: number) {
+    fetch(`${apiBase}/competitors/mappings/${mappingId}`, { method: "DELETE" })
+      .then(loadCompetitorData)
+      .catch(loadCompetitorData);
+  }
+
+  function createCompetitorRate() {
+    if (!selectedCompetitorRoomTypeId || !newRateDate || !newRatePrice) {
+      return;
+    }
+    fetch(`${apiBase}/competitors/rates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        competitor_room_type_id: Number(selectedCompetitorRoomTypeId),
+        stay_date: newRateDate,
+        price: Number(newRatePrice),
+        currency: "CNY",
+        source: "manual"
+      })
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("competitor rate create failed");
+        }
+        setNewRatePrice("");
+        loadCompetitorData();
+      })
+      .catch(loadCompetitorData);
+  }
+
   function updateEventStatus(eventId: number, status: string) {
     fetch(`${apiBase}/external-events/${eventId}/status`, {
       method: "POST",
@@ -553,6 +761,14 @@ export default function Dashboard() {
           >
             <SearchCheck size={18} aria-hidden />
             {copy.eventReview}
+          </button>
+          <button
+            className={`navItem ${activeView === "competitors" ? "active" : ""}`}
+            onClick={() => setActiveView("competitors")}
+            type="button"
+          >
+            <Store size={18} aria-hidden />
+            {copy.competitorPricing}
           </button>
         </nav>
       </aside>
@@ -697,7 +913,7 @@ export default function Dashboard() {
           </div>
         </section>
           </>
-        ) : (
+        ) : activeView === "events" ? (
           <section className="eventReview">
             <div className="panelHeader">
               <div>
@@ -869,6 +1085,225 @@ export default function Dashboard() {
                 <div className="emptyState">{copy.noEvents}</div>
               ) : null}
             </div>
+          </section>
+        ) : (
+          <section className="competitorWorkspace">
+            <div className="panelHeader">
+              <div>
+                <h2>{copy.competitorPricing}</h2>
+                <span>{copy.competitorHint}</span>
+              </div>
+              <button
+                className="iconButton"
+                disabled={isCompetitorLoading}
+                onClick={loadCompetitorData}
+                title={copy.refresh}
+                type="button"
+              >
+                <RefreshCw className={isCompetitorLoading ? "spin" : ""} size={18} aria-hidden />
+              </button>
+            </div>
+
+            <section className="controls competitorControls" aria-label={copy.controls}>
+              <div className="controlGroup">
+                <label>
+                  {copy.hotelList}
+                  <select
+                    value={selectedHotelId}
+                    onChange={(event) => setSelectedHotelId(event.target.value)}
+                  >
+                    {hotels.map((hotel) => (
+                      <option key={hotel.id} value={hotel.id}>
+                        {hotel.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  {copy.roomType}
+                  <select
+                    value={selectedRoomTypeId}
+                    onChange={(event) => setSelectedRoomTypeId(event.target.value)}
+                  >
+                    {roomTypes.map((roomType) => (
+                      <option key={roomType.id} value={roomType.id}>
+                        {roomType.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <span>{selectedRoomType?.name ?? copy.loading}</span>
+            </section>
+
+            <section className="competitorMetrics">
+              <div className="metric">
+                <span>{copy.competitorHotels}</span>
+                <strong>{competitorHotels.length}</strong>
+              </div>
+              <div className="metric">
+                <span>{copy.competitorRoomTypes}</span>
+                <strong>{competitorRoomTypes.length}</strong>
+              </div>
+              <div className="metric">
+                <span>{copy.mappings}</span>
+                <strong>{competitorMappings.length}</strong>
+              </div>
+              <div className="metric">
+                <span>{copy.avgRate}</span>
+                <strong>{competitorRates.length ? `CNY ${competitorMarketAverage}` : "-"}</strong>
+              </div>
+            </section>
+
+            <section className="competitorGrid">
+              <div className="panel competitorPanel">
+                <div className="panelHeader compact">
+                  <div>
+                    <h2>{copy.competitorHotels}</h2>
+                    <span>Ctrip RPA PoC source list</span>
+                  </div>
+                </div>
+                <div className="competitorHotelList">
+                  {competitorHotels.map((hotel) => (
+                    <button
+                      className={`competitorHotelButton ${
+                        selectedCompetitorHotelId === hotel.id ? "selected" : ""
+                      }`}
+                      key={hotel.id}
+                      onClick={() => setSelectedCompetitorHotelId(hotel.id)}
+                      type="button"
+                    >
+                      <strong>{hotel.name}</strong>
+                      <span>{hotel.room_type_count} {copy.competitorRoomTypes}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="panel competitorPanel">
+                <div className="panelHeader compact">
+                  <div>
+                    <h2>{copy.competitorRoomTypes}</h2>
+                    <span>{copy.addCompetitorRoom}</span>
+                  </div>
+                </div>
+                <div className="inlineForm">
+                  <input
+                    value={newCompetitorRoomName}
+                    onChange={(event) => setNewCompetitorRoomName(event.target.value)}
+                    placeholder={copy.competitorRoom}
+                  />
+                  <button className="actionButton" onClick={createCompetitorRoomType} type="button">
+                    <Plus size={16} aria-hidden />
+                    {copy.addCompetitorRoom}
+                  </button>
+                </div>
+                <div className="compactList">
+                  {filteredCompetitorRoomTypes.map((roomType) => (
+                    <button
+                      className={`compactListItem ${
+                        selectedCompetitorRoomTypeId === String(roomType.id) ? "selected" : ""
+                      }`}
+                      key={roomType.id}
+                      onClick={() => setSelectedCompetitorRoomTypeId(String(roomType.id))}
+                      type="button"
+                    >
+                      <strong>{roomType.name}</strong>
+                      <span>{roomType.competitor_hotel_name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="panel competitorPanel">
+                <div className="panelHeader compact">
+                  <div>
+                    <h2>{copy.mappings}</h2>
+                    <span>{selectedRoomType?.name ?? copy.loading}</span>
+                  </div>
+                  <button
+                    className="actionButton"
+                    disabled={!selectedCompetitorRoomTypeId}
+                    onClick={createCompetitorMapping}
+                    type="button"
+                  >
+                    <Plus size={16} aria-hidden />
+                    {copy.addMapping}
+                  </button>
+                </div>
+                <div className="mappingList">
+                  {competitorMappings.map((mapping) => (
+                    <article className="mappingCard" key={mapping.id}>
+                      <div>
+                        <strong>{mapping.competitor_hotel_name}</strong>
+                        <span>{mapping.competitor_room_type_name}</span>
+                      </div>
+                      <button
+                        className="iconButton"
+                        onClick={() => deleteCompetitorMapping(mapping.id)}
+                        title={copy.reject}
+                        type="button"
+                      >
+                        <X size={16} aria-hidden />
+                      </button>
+                    </article>
+                  ))}
+                  {competitorMappings.length === 0 ? (
+                    <div className="emptyState compact">{copy.noMappings}</div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="panel competitorPanel">
+                <div className="panelHeader compact">
+                  <div>
+                    <h2>{copy.rateObservations}</h2>
+                    <span>{copy.addRate}</span>
+                  </div>
+                </div>
+                <div className="inlineForm rateForm">
+                  <input
+                    type="date"
+                    value={newRateDate}
+                    onChange={(event) => setNewRateDate(event.target.value)}
+                  />
+                  <input
+                    min="0"
+                    type="number"
+                    value={newRatePrice}
+                    onChange={(event) => setNewRatePrice(event.target.value)}
+                    placeholder={copy.price}
+                  />
+                  <button
+                    className="actionButton"
+                    disabled={!selectedCompetitorRoomTypeId}
+                    onClick={createCompetitorRate}
+                    type="button"
+                  >
+                    <Plus size={16} aria-hidden />
+                    {copy.addRate}
+                  </button>
+                </div>
+                <div className="rateObservationList">
+                  {competitorRates.map((rate) => (
+                    <article className="rateObservation" key={rate.id}>
+                      <div>
+                        <strong>{rate.competitor_hotel_name}</strong>
+                        <span>{rate.competitor_room_type_name}</span>
+                      </div>
+                      <div>
+                        <strong>{rate.stay_date}</strong>
+                        <span>{rate.source}</span>
+                      </div>
+                      <strong>{rate.currency} {Math.round(rate.price)}</strong>
+                    </article>
+                  ))}
+                  {competitorRates.length === 0 ? (
+                    <div className="emptyState compact">{copy.noRates}</div>
+                  ) : null}
+                </div>
+              </div>
+            </section>
           </section>
         )}
       </section>
@@ -1096,6 +1531,32 @@ export default function Dashboard() {
                     : "-"}
                 </strong>
               </div>
+            </div>
+            <div className="modalGrid historical">
+              <div>
+                <span>{copy.competitorMarketRate}</span>
+                <strong>
+                  {selectedRecommendation.competitor_market_rate
+                    ? `MOP ${Math.round(selectedRecommendation.competitor_market_rate)}`
+                    : "-"}
+                </strong>
+              </div>
+              <div>
+                <span>{copy.competitorAdjustment}</span>
+                <strong>MOP {selectedRecommendation.competitor_adjustment_amount}</strong>
+              </div>
+            </div>
+            <div className="modalReason">
+              <span>{copy.competitorLogic}</span>
+              {selectedRecommendation.competitor_logic.length > 0 ? (
+                <ul>
+                  {selectedRecommendation.competitor_logic.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p>-</p>
+              )}
             </div>
             <div className="modalReason">
               <span>{copy.eventLogic}</span>
