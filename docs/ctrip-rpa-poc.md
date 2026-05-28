@@ -30,7 +30,24 @@ cd backend
 .\.venv\Scripts\python.exe scripts\ctrip_rpa_probe.py --pause-seconds 3 --scan-days 2 --scan-delay-seconds 8
 ```
 
-The first working approach is not calendar scraping. Instead, the script changes `checkIn` and `checkOut` in the URL one day at a time, then reads the visible room prices.
+This direct scan changes `checkIn` and `checkOut` in the URL one day at a time, then reads the visible room prices. It is useful for small checks, but it is too chatty for a full 90-day run.
+
+## Multiplier Strategy
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\ctrip_rpa_probe.py --pause-seconds 3 --multiplier-strategy --calendar-days 90 --scan-delay-seconds 8
+```
+
+The preferred PoC strategy is:
+
+- Read all visible room prices for the start date.
+- Read all visible room prices for the nearest opposite day type, so both weekday and weekend have a sample.
+- Compute each room type as a multiplier of that date's lowest visible room price.
+- Open the Ctrip calendar and read daily hotel-level minimum prices.
+- Estimate future room-type prices by applying weekday/weekend multipliers to each calendar minimum price.
+
+This reduces page visits sharply. It keeps observed sample prices and estimated future prices separate in the JSON.
 
 ## Import Probe Result
 
@@ -42,7 +59,9 @@ cd backend
 This imports:
 
 - competitor room types
-- competitor rate observations with `source = ctrip_rpa`
+- direct scan observations with `source = ctrip_rpa`
+- multiplier sample observations with `source = ctrip_rpa_observed`
+- multiplier estimates with `source = ctrip_rpa_estimated`
 
 It does not automatically map competitor room types to local hotel room types. Those mappings remain a manual review step in the `竞品价格` workspace.
 
@@ -56,4 +75,4 @@ The first successful test against 澳门金龙酒店 read two stay dates and fiv
 - 海景豪华大床房
 - 豪华双床房
 
-The date calendar opens, but its date cells do not expose reliable per-day prices in accessible text or HTML. The URL-per-date approach is currently more stable.
+The multiplier strategy test read 87 valid calendar minimum-price dates from 2026-05-29 through 2026-08-25 and generated 435 estimated room-type rates from two sample dates. Two implausibly low calendar values were filtered out as parsing noise.

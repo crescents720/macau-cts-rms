@@ -33,6 +33,8 @@ def main() -> None:
     parser.add_argument("--pause-seconds", type=int, default=45)
     parser.add_argument("--scan-days", type=int, default=0)
     parser.add_argument("--scan-delay-seconds", type=int, default=5)
+    parser.add_argument("--multiplier-strategy", action="store_true")
+    parser.add_argument("--calendar-days", type=int, default=90)
     parser.add_argument("--open-calendar", action="store_true")
     parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
@@ -65,6 +67,19 @@ async def run_probe(args: argparse.Namespace) -> None:
         )
         await page.wait_for_timeout(args.pause_seconds * 1000)
         await _try_accept_common_popups(page)
+        if args.multiplier_strategy:
+            result = await _run_multiplier_strategy(page, args)
+            json_path = output_dir / f"ctrip-{args.hotel_id}-multiplier-{stamp}.json"
+            json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            await context.close()
+            print(json.dumps({
+                "json_path": str(json_path),
+                "calendar_days": len(result["calendar_min_rates"]),
+                "estimated_rows": len(result["estimated_room_rates"]),
+                "weekday_sample": result["weekday_sample"]["stay_date"] if result.get("weekday_sample") else None,
+                "weekend_sample": result["weekend_sample"]["stay_date"] if result.get("weekend_sample") else None,
+            }, ensure_ascii=False, indent=2))
+            return
         if args.scan_days > 0:
             result = await _scan_daily_room_rates(page, args)
             json_path = output_dir / f"ctrip-{args.hotel_id}-scan-{stamp}.json"
@@ -190,6 +205,224 @@ async def _scan_daily_room_rates(page: Any, args: argparse.Namespace) -> dict[st
         "captured_at": datetime.now().isoformat(timespec="seconds"),
         "daily_rates": daily_rates,
     }
+
+
+async def _run_multiplier_strategy(page: Any, args: argparse.Namespace) -> dict[str, Any]:
+    start_date = _start_date_from_url(args.url) or date.today()
+    if start_date < date.today():
+        start_date = date.today()
+    opposite_date = _next_opposite_day_type(start_date)
+
+    sample_dates = sorted({start_date, opposite_date})
+    samples = {}
+    for sample_date in sample_dates:
+        room_rates = await _read_room_rates_for_date(page, args, sample_date)
+        samples[_day_type(sample_date)] = _build_multiplier_sample(sample_date, room_rates)
+
+    calendar_min_rates = await _read_calendar_min_rates(page, args, start_date)
+    estimated_room_rates = _estimate_room_rates(
+        calendar_min_rates=calendar_min_rates,
+        weekday_sample=samples.get("weekday"),
+        weekend_sample=samples.get("weekend"),
+    )
+
+    return {
+        "hotel_id": args.hotel_id,
+        "source_url": args.url,
+        "captured_at": datetime.now().isoformat(timespec="seconds"),
+        "strategy": "ctrip_multiplier",
+        "weekday_sample": samples.get("weekday"),
+        "weekend_sample": samples.get("weekend"),
+        "calendar_min_rates": calendar_min_rates,
+        "estimated_room_rates": estimated_room_rates,
+    }
+
+
+async def _read_room_rates_for_date(
+    page: Any,
+    args: argparse.Namespace,
+    stay_date: date,
+) -> list[dict[str, Any]]:
+    check_out = stay_date + timedelta(days=1)
+    url = _url_with_dates(args.url, stay_date, check_out)
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except PlaywrightTimeoutError:
+        print(f"Navigation timed out for {stay_date}; attempting to parse current page anyway.")
+    await page.wait_for_timeout(args.scan_delay_seconds * 1000)
+    await _try_accept_common_popups(page)
+    await _scroll_to_rooms(page)
+    await page.wait_for_timeout(2500)
+    text = await page.locator("body").inner_text(timeout=30_000)
+    return _extract_room_rate_candidates(text)
+
+
+def _build_multiplier_sample(stay_date: date, room_rates: list[dict[str, Any]]) -> dict[str, Any]:
+    if not room_rates:
+        return {
+            "stay_date": stay_date.isoformat(),
+            "day_type": _day_type(stay_date),
+            "base_price": None,
+            "room_rates": [],
+            "multipliers": {},
+        }
+    base_price = min(item["price"] for item in room_rates)
+    multipliers = {
+        item["room_name"]: round(item["price"] / base_price, 4)
+        for item in room_rates
+        if base_price > 0
+    }
+    return {
+        "stay_date": stay_date.isoformat(),
+        "day_type": _day_type(stay_date),
+        "base_price": base_price,
+        "room_rates": room_rates,
+        "multipliers": multipliers,
+    }
+
+
+async def _read_calendar_min_rates(
+    page: Any,
+    args: argparse.Namespace,
+    start_date: date,
+) -> list[dict[str, Any]]:
+    url = _url_with_dates(args.url, start_date, start_date + timedelta(days=1))
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except PlaywrightTimeoutError:
+        print("Navigation timed out while opening calendar; attempting to parse current page anyway.")
+    await page.wait_for_timeout(args.scan_delay_seconds * 1000)
+    await _try_accept_common_popups(page)
+    await _try_open_calendar(page)
+    await page.wait_for_timeout(2500)
+
+    rates: dict[str, int] = {}
+    end_date = start_date + timedelta(days=args.calendar_days - 1)
+    months_needed = max(1, (args.calendar_days + 30) // 31 + 1)
+    for _ in range(months_needed):
+        html = await page.content()
+        rates.update(_extract_calendar_min_rates_from_html(html))
+        covered_dates = [
+            date.fromisoformat(stay_date)
+            for stay_date in rates
+            if start_date <= date.fromisoformat(stay_date) <= end_date
+        ]
+        if len(covered_dates) >= args.calendar_days or (
+            covered_dates and max(covered_dates) >= end_date
+        ):
+            break
+        clicked = await _click_next_calendar_month(page)
+        if not clicked:
+            break
+        await page.wait_for_timeout(1800)
+
+    return [
+        {
+            "stay_date": stay_date,
+            "min_price": rates[stay_date],
+            "day_type": _day_type(date.fromisoformat(stay_date)),
+        }
+        for stay_date in sorted(rates)
+        if start_date <= date.fromisoformat(stay_date) <= end_date
+    ][: args.calendar_days]
+
+
+async def _click_next_calendar_month(page: Any) -> bool:
+    for selector in [
+        ".c-calendar-icon-next-mon",
+        "[aria-label='Go to next month']",
+    ]:
+        try:
+            locator = page.locator(selector).first
+            if await locator.count():
+                await locator.click(timeout=2500, force=True)
+                return True
+        except Exception:
+            continue
+    try:
+        return bool(
+            await page.evaluate(
+                """
+                () => {
+                  const next = document.querySelector(
+                    '.c-calendar-icon-next-mon:not(.is-disable), [aria-label="Go to next month"]'
+                  );
+                  if (!next) return false;
+                  next.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  return true;
+                }
+                """
+            )
+        )
+    except Exception:
+        return False
+    return False
+
+
+def _extract_calendar_min_rates_from_html(html: str) -> dict[str, int]:
+    rates: dict[str, int] = {}
+    cell_pattern = re.compile(
+        r'data-d="(?P<data_d>[^"]+)".{0,1200}?class="price"[^>]*>.*?<span[^>]*>(?P<price>\d{2,6})</span>',
+        flags=re.S,
+    )
+    for match in cell_pattern.finditer(html):
+        stay_date = _date_from_calendar_data_d(match.group("data_d"))
+        if stay_date is None:
+            continue
+        price = int(match.group("price"))
+        if price < 100 or price > 20_000:
+            continue
+        current = rates.get(stay_date.isoformat())
+        if current is None or price < current:
+            rates[stay_date.isoformat()] = price
+    return rates
+
+
+def _date_from_calendar_data_d(value: str) -> date | None:
+    try:
+        raw = datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+    return raw + timedelta(days=1)
+
+
+def _estimate_room_rates(
+    calendar_min_rates: list[dict[str, Any]],
+    weekday_sample: dict[str, Any] | None,
+    weekend_sample: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    estimates = []
+    for calendar_rate in calendar_min_rates:
+        stay_date = date.fromisoformat(calendar_rate["stay_date"])
+        sample = weekend_sample if _day_type(stay_date) == "weekend" else weekday_sample
+        if not sample or not sample.get("multipliers"):
+            continue
+        for room_name, multiplier in sample["multipliers"].items():
+            estimates.append(
+                {
+                    "stay_date": calendar_rate["stay_date"],
+                    "room_name": room_name,
+                    "estimated_price": int(round(calendar_rate["min_price"] * multiplier)),
+                    "calendar_min_price": calendar_rate["min_price"],
+                    "multiplier": multiplier,
+                    "day_type": calendar_rate["day_type"],
+                    "sample_date": sample["stay_date"],
+                    "currency": "CNY",
+                }
+            )
+    return estimates
+
+
+def _next_opposite_day_type(start_date: date) -> date:
+    target = "weekday" if _day_type(start_date) == "weekend" else "weekend"
+    candidate = start_date + timedelta(days=1)
+    while _day_type(candidate) != target:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def _day_type(stay_date: date) -> str:
+    return "weekend" if stay_date.weekday() in {4, 5} else "weekday"
 
 
 async def _scroll_to_rooms(page: Any) -> None:
