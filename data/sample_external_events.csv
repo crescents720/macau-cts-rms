@@ -1,0 +1,4 @@
+name,event_type,start_date,end_date,venue_id,source_name,source_type,source_url,confidence_score,impact_level,base_weight,status,notes
+澳门格兰披治大赛车,grand_prix,2026-11-19,2026-11-22,guia-circuit,Manual Seed,manual,,0.95,major,0.32,confirmed,Annual citywide racing event with strong Macau Peninsula impact
+大型演唱会示例,concert,2026-07-18,2026-07-18,galaxy-arena,Manual Seed,manual,,0.80,medium,0.12,candidate,Example candidate event for future review workflow
+
