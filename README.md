@@ -36,6 +36,7 @@ hotel-rms/
 - Built-in Macau and Mainland China holiday premium logic
 - External event review workflow with hotel-specific impact weights
 - Macau Government Tourism Office "What's On" event source ingestion
+- Human-in-the-loop Ctrip RPA proof of concept for competitor rates
 
 ## Local Development
 
