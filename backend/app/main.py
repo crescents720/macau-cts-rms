@@ -2,7 +2,11 @@ import os
 import math
 import json
 import re
-from datetime import date, timedelta
+import subprocess
+import sys
+import uuid
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from statistics import mean, median
 from typing import Annotated
 from urllib.parse import urlencode
@@ -10,7 +14,7 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 import psycopg
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -214,11 +218,31 @@ class CompetitorRateObservationCreate(BaseModel):
     source_url: str | None = None
 
 
+class CtripCollectionRequest(BaseModel):
+    hotel_ids: list[str] | None = None
+    calendar_days: int = 90
+    skip_import: bool = False
+
+
+class CtripCollectionJobRecord(BaseModel):
+    id: str
+    status: str
+    started_at: str
+    finished_at: str | None = None
+    hotel_ids: list[str] | None = None
+    calendar_days: int
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    exit_code: int | None = None
+
+
 app = FastAPI(
     title="Macau CTS Hotel RMS API",
     version="0.1.0",
     description="Prototype API for 90-day hotel pricing recommendations.",
 )
+
+CTRIP_COLLECTION_JOBS: dict[str, CtripCollectionJobRecord] = {}
 
 app.add_middleware(
     CORSMiddleware,
@@ -745,6 +769,71 @@ def create_competitor_rate(rate: CompetitorRateObservationCreate) -> CompetitorR
 
     created = next(item for item in list_competitor_rates(days=180) if item.id == rate_id)
     return created
+
+
+@app.post("/competitors/ctrip-collection", response_model=CtripCollectionJobRecord)
+def start_ctrip_collection(
+    request: CtripCollectionRequest,
+    background_tasks: BackgroundTasks,
+) -> CtripCollectionJobRecord:
+    if request.calendar_days < 1 or request.calendar_days > 180:
+        raise HTTPException(status_code=400, detail="calendar_days must be between 1 and 180")
+    hotel_ids = [hotel_id.strip() for hotel_id in request.hotel_ids or [] if hotel_id.strip()]
+    if not hotel_ids:
+        hotel_ids = None
+    job = CtripCollectionJobRecord(
+        id=str(uuid.uuid4()),
+        status="queued",
+        started_at=datetime.now().isoformat(timespec="seconds"),
+        hotel_ids=hotel_ids,
+        calendar_days=request.calendar_days,
+    )
+    CTRIP_COLLECTION_JOBS[job.id] = job
+    background_tasks.add_task(_run_ctrip_collection_job, job.id, hotel_ids, request.calendar_days, request.skip_import)
+    return job
+
+
+@app.get("/competitors/ctrip-collection/{job_id}", response_model=CtripCollectionJobRecord)
+def get_ctrip_collection_job(job_id: str) -> CtripCollectionJobRecord:
+    job = CTRIP_COLLECTION_JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Ctrip collection job not found")
+    return job
+
+
+def _run_ctrip_collection_job(
+    job_id: str,
+    hotel_ids: list[str] | None,
+    calendar_days: int,
+    skip_import: bool,
+) -> None:
+    job = CTRIP_COLLECTION_JOBS[job_id]
+    job.status = "running"
+    backend_dir = Path(__file__).resolve().parents[1]
+    command = [
+        sys.executable,
+        "scripts/collect_ctrip_competitors.py",
+        "--calendar-days",
+        str(calendar_days),
+    ]
+    if hotel_ids:
+        command.extend(["--hotel-ids", ",".join(hotel_ids)])
+    if skip_import:
+        command.append("--skip-import")
+
+    completed = subprocess.run(
+        command,
+        cwd=backend_dir,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    job.exit_code = completed.returncode
+    job.stdout_tail = completed.stdout[-5000:]
+    job.stderr_tail = completed.stderr[-5000:]
+    job.finished_at = datetime.now().isoformat(timespec="seconds")
+    job.status = "completed" if completed.returncode == 0 else "failed"
 
 
 @app.post("/external-events/{event_id}/status", response_model=ExternalEventRecord)

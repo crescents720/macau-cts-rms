@@ -553,6 +553,10 @@ h2 {
   padding: 14px;
 }
 
+.competitorCollector {
+  margin-bottom: 0;
+}
+
 .collectorHeader {
   align-items: flex-start;
   display: flex;
@@ -619,6 +623,45 @@ h2 {
 .candidateCard strong {
   display: block;
   margin-top: 3px;
+}
+
+.collectionStatus {
+  background: #ffffff;
+  border: 1px solid #e4dfd4;
+  border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 10px 12px;
+}
+
+.collectionStatus.completed {
+  border-color: #91c8ad;
+}
+
+.collectionStatus.failed {
+  border-color: #d99a92;
+}
+
+.collectionStatus span {
+  color: #6c675d;
+  font-size: 13px;
+}
+
+.collectionStatus pre {
+  background: #f7f5ef;
+  border-radius: 6px;
+  color: #4b473f;
+  font-size: 12px;
+  margin: 6px 0 0;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
 }
 
 .statusButton,

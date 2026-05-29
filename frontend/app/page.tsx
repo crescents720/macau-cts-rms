@@ -188,6 +188,18 @@ type CompetitorRateObservationRecord = {
   collected_at: string;
 };
 
+type CtripCollectionJobRecord = {
+  id: string;
+  status: string;
+  started_at: string;
+  finished_at: string | null;
+  hotel_ids: string[] | null;
+  calendar_days: number;
+  stdout_tail: string;
+  stderr_tail: string;
+  exit_code: number | null;
+};
+
 const apiBase = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8003";
 
 const predictionWindows = [
@@ -239,6 +251,12 @@ const copy = {
   mappings: "\u623f\u578b\u6620\u5c04",
   rateObservations: "\u4ef7\u683c\u89c2\u6d4b",
   addRate: "\u8bb0\u5f55\u4ef7\u683c",
+  collectCtripRates: "\u8bfb\u53d6\u643a\u7a0b\u4ef7\u683c",
+  collectSelectedCtrip: "\u8bfb\u53d6\u5f53\u524d\u7ade\u54c1",
+  collectAllCtrip: "\u8bfb\u53d6\u5168\u90e8\u7ade\u54c1",
+  collectionRunning: "\u91c7\u96c6\u4efb\u52a1\u8fd0\u884c\u4e2d",
+  collectionCompleted: "\u91c7\u96c6\u5b8c\u6210",
+  collectionFailed: "\u91c7\u96c6\u5931\u8d25",
   competitorHotel: "\u7ade\u54c1\u9152\u5e97",
   competitorRoom: "\u7ade\u54c1\u623f\u578b",
   stayDate: "\u5165\u4f4f\u65e5\u671f",
@@ -346,6 +364,8 @@ export default function Dashboard() {
   const [newRateDate, setNewRateDate] = useState(todayString());
   const [newRatePrice, setNewRatePrice] = useState("");
   const [isCompetitorLoading, setIsCompetitorLoading] = useState(false);
+  const [ctripCollectionJob, setCtripCollectionJob] =
+    useState<CtripCollectionJobRecord | null>(null);
 
   const selectedRoomType = roomTypes.find((room) => room.id === selectedRoomTypeId);
   const activeHotel = useMemo(
@@ -419,6 +439,28 @@ export default function Dashboard() {
       loadCompetitorData();
     }
   }, [activeView, eventStatus, selectedRoomTypeId]);
+
+  useEffect(() => {
+    if (!ctripCollectionJob || !["queued", "running"].includes(ctripCollectionJob.status)) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      fetch(`${apiBase}/competitors/ctrip-collection/${ctripCollectionJob.id}`)
+        .then((response) => response.json())
+        .then((job: CtripCollectionJobRecord) => {
+          setCtripCollectionJob(job);
+          if (["completed", "failed"].includes(job.status)) {
+            loadCompetitorData();
+          }
+        })
+        .catch(() =>
+          setCtripCollectionJob((current) =>
+            current ? { ...current, status: "failed", stderr_tail: "Unable to read job status" } : current
+          )
+        );
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [ctripCollectionJob?.id, ctripCollectionJob?.status]);
 
   function refreshRecommendations() {
     setIsRefreshing(true);
@@ -682,6 +724,40 @@ export default function Dashboard() {
         loadCompetitorData();
       })
       .catch(loadCompetitorData);
+  }
+
+  function startCtripCollection(scope: "selected" | "all") {
+    const hotelIds = scope === "selected" && selectedCompetitorHotelId
+      ? [selectedCompetitorHotelId]
+      : null;
+    fetch(`${apiBase}/competitors/ctrip-collection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        hotel_ids: hotelIds,
+        calendar_days: selectedDays
+      })
+    })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("ctrip collection failed to start");
+        }
+        return response.json();
+      })
+      .then(setCtripCollectionJob)
+      .catch(() =>
+        setCtripCollectionJob({
+          id: "local-error",
+          status: "failed",
+          started_at: todayString(),
+          finished_at: todayString(),
+          hotel_ids: hotelIds,
+          calendar_days: selectedDays,
+          stdout_tail: "",
+          stderr_tail: "Unable to start Ctrip collection",
+          exit_code: null
+        })
+      );
   }
 
   function updateEventStatus(eventId: number, status: string) {
@@ -1165,6 +1241,78 @@ export default function Dashboard() {
                 <span>{copy.avgRate}</span>
                 <strong>{competitorRates.length ? `CNY ${competitorMarketAverage}` : "-"}</strong>
               </div>
+            </section>
+
+            <section className="collectorPanel competitorCollector">
+              <div className="collectorHeader">
+                <div>
+                  <h3>{copy.collectCtripRates}</h3>
+                  <span>
+                    {ctripCollectionJob
+                      ? `${ctripCollectionJob.status} · ${ctripCollectionJob.calendar_days} days`
+                      : "Ctrip RPA local collector"}
+                  </span>
+                </div>
+                <div className="eventHeaderActions">
+                  <button
+                    className="actionButton"
+                    disabled={
+                      !!ctripCollectionJob &&
+                      ["queued", "running"].includes(ctripCollectionJob.status)
+                    }
+                    onClick={() => startCtripCollection("selected")}
+                    type="button"
+                  >
+                    <SearchCheck size={16} aria-hidden />
+                    {copy.collectSelectedCtrip}
+                  </button>
+                  <button
+                    className="actionButton confirm"
+                    disabled={
+                      !!ctripCollectionJob &&
+                      ["queued", "running"].includes(ctripCollectionJob.status)
+                    }
+                    onClick={() => startCtripCollection("all")}
+                    type="button"
+                  >
+                    <RefreshCw
+                      className={
+                        ctripCollectionJob &&
+                        ["queued", "running"].includes(ctripCollectionJob.status)
+                          ? "spinning"
+                          : ""
+                      }
+                      size={16}
+                      aria-hidden
+                    />
+                    {copy.collectAllCtrip}
+                  </button>
+                </div>
+              </div>
+              {ctripCollectionJob && (
+                <div className={`collectionStatus ${ctripCollectionJob.status}`}>
+                  <strong>
+                    {ctripCollectionJob.status === "completed"
+                      ? copy.collectionCompleted
+                      : ctripCollectionJob.status === "failed"
+                        ? copy.collectionFailed
+                        : copy.collectionRunning}
+                  </strong>
+                  <span>
+                    {ctripCollectionJob.finished_at
+                      ? `Finished ${ctripCollectionJob.finished_at}`
+                      : `Started ${ctripCollectionJob.started_at}`}
+                  </span>
+                  {(ctripCollectionJob.stderr_tail || ctripCollectionJob.stdout_tail) && (
+                    <pre>
+                      {(ctripCollectionJob.stderr_tail || ctripCollectionJob.stdout_tail)
+                        .split("\n")
+                        .slice(-8)
+                        .join("\n")}
+                    </pre>
+                  )}
+                </div>
+              )}
             </section>
 
             <section className="competitorGrid">
