@@ -452,6 +452,13 @@ h2 {
   gap: 8px;
 }
 
+.compactListRow {
+  align-items: stretch;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 38px;
+}
+
 .competitorHotelButton,
 .compactListItem {
   background: #fbfaf6;
@@ -462,6 +469,10 @@ h2 {
   min-height: 58px;
   padding: 10px 12px;
   text-align: left;
+}
+
+.compactListItem {
+  width: 100%;
 }
 
 .competitorHotelButton.selected,
@@ -729,6 +740,10 @@ h2 {
 .actionButton:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.iconButton.danger {
+  color: #8a362c;
 }
 
 .emptyState {

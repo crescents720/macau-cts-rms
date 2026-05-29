@@ -39,6 +39,13 @@ cd backend
 .\.venv\Scripts\python.exe scripts\ctrip_rpa_probe.py --pause-seconds 3 --multiplier-strategy --calendar-days 90 --scan-delay-seconds 8
 ```
 
+For hotels that do not have a stored Ctrip URL yet, let the script read the competitor hotel name from the database and resolve the Ctrip detail page from search results:
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\ctrip_rpa_probe.py --hotel-id rio --hotel-name-from-db --pause-seconds 3 --multiplier-strategy --calendar-days 90 --scan-delay-seconds 8
+```
+
 The preferred PoC strategy is:
 
 - Read all visible room prices for the start date.
@@ -48,6 +55,19 @@ The preferred PoC strategy is:
 - Estimate future room-type prices by applying weekday/weekend multipliers to each calendar minimum price.
 
 This reduces page visits sharply. It keeps observed sample prices and estimated future prices separate in the JSON.
+
+## Batch Collection
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe scripts\collect_ctrip_competitors.py --calendar-days 90
+```
+
+The batch collector reads active competitor hotels from the database, resolves each hotel by name on Ctrip, runs the multiplier strategy, and imports the resulting JSON into the competitor pricing tables. To test only one or two hotels:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\collect_ctrip_competitors.py --hotel-ids rio,sintra --calendar-days 14
+```
 
 ## Import Probe Result
 

@@ -9,6 +9,7 @@ import {
   RefreshCw,
   SearchCheck,
   Store,
+  Trash2,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -647,6 +648,17 @@ export default function Dashboard() {
       .catch(loadCompetitorData);
   }
 
+  function deleteCompetitorRoomType(roomTypeId: number) {
+    fetch(`${apiBase}/competitors/room-types/${roomTypeId}`, { method: "DELETE" })
+      .then(() => {
+        setSelectedCompetitorRoomTypeId((current) =>
+          current === String(roomTypeId) ? "" : current
+        );
+        loadCompetitorData();
+      })
+      .catch(loadCompetitorData);
+  }
+
   function createCompetitorRate() {
     if (!selectedCompetitorRoomTypeId || !newRateDate || !newRatePrice) {
       return;
@@ -1200,17 +1212,26 @@ export default function Dashboard() {
                 </div>
                 <div className="compactList">
                   {filteredCompetitorRoomTypes.map((roomType) => (
-                    <button
-                      className={`compactListItem ${
-                        selectedCompetitorRoomTypeId === String(roomType.id) ? "selected" : ""
-                      }`}
-                      key={roomType.id}
-                      onClick={() => setSelectedCompetitorRoomTypeId(String(roomType.id))}
-                      type="button"
-                    >
-                      <strong>{roomType.name}</strong>
-                      <span>{roomType.competitor_hotel_name}</span>
-                    </button>
+                    <div className="compactListRow" key={roomType.id}>
+                      <button
+                        className={`compactListItem ${
+                          selectedCompetitorRoomTypeId === String(roomType.id) ? "selected" : ""
+                        }`}
+                        onClick={() => setSelectedCompetitorRoomTypeId(String(roomType.id))}
+                        type="button"
+                      >
+                        <strong>{roomType.name}</strong>
+                        <span>{roomType.competitor_hotel_name}</span>
+                      </button>
+                      <button
+                        className="iconButton danger"
+                        onClick={() => deleteCompetitorRoomType(roomType.id)}
+                        title="删除竞品房型"
+                        type="button"
+                      >
+                        <Trash2 size={16} aria-hidden />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>

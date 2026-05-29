@@ -25,10 +25,32 @@ def main() -> None:
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cursor:
+            update_competitor_hotel_metadata(cursor, payload, competitor_hotel_id)
             imported = import_payload(cursor, payload, competitor_hotel_id)
         conn.commit()
 
     print(json.dumps(imported, ensure_ascii=False, indent=2))
+
+
+def update_competitor_hotel_metadata(
+    cursor: Any,
+    payload: dict[str, Any],
+    competitor_hotel_id: str,
+) -> None:
+    resolved_url = payload.get("resolved_hotel_url") or payload.get("source_url")
+    resolved_hotel_id = payload.get("resolved_ctrip_hotel_id")
+    if not resolved_url and not resolved_hotel_id:
+        return
+    cursor.execute(
+        """
+        UPDATE competitor_hotels
+        SET ctrip_url = COALESCE(%s, ctrip_url),
+            ctrip_hotel_id = COALESCE(%s, ctrip_hotel_id),
+            updated_at = now()
+        WHERE id = %s
+        """,
+        (resolved_url, resolved_hotel_id, competitor_hotel_id),
+    )
 
 
 def import_payload(cursor: Any, payload: dict[str, Any], competitor_hotel_id: str) -> dict[str, int]:

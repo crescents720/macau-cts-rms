@@ -542,6 +542,29 @@ def create_competitor_room_type(room_type: CompetitorRoomTypeCreate) -> Competit
     return created
 
 
+@app.delete("/competitors/room-types/{room_type_id}")
+def delete_competitor_room_type(room_type_id: int) -> dict[str, str]:
+    with _db_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "DELETE FROM room_type_competitor_mappings WHERE competitor_room_type_id = %s",
+                (room_type_id,),
+            )
+            cursor.execute(
+                """
+                UPDATE competitor_room_types
+                SET active = FALSE,
+                    last_seen_at = now()
+                WHERE id = %s
+                """,
+                (room_type_id,),
+            )
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Competitor room type not found")
+        conn.commit()
+    return {"status": "deleted"}
+
+
 @app.get("/competitors/mappings", response_model=list[CompetitorMappingRecord])
 def list_competitor_mappings(
     hotel_id: str | None = None,

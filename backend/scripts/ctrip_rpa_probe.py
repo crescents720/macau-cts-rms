@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -11,6 +12,11 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
+
+try:
+    import psycopg
+except ImportError:  # pragma: no cover - the script can still run with --hotel-name.
+    psycopg = None
 
 
 DEFAULT_GOLDEN_DRAGON_URL = (
@@ -26,8 +32,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Human-in-the-loop Ctrip hotel page probe for competitor pricing PoC."
     )
-    parser.add_argument("--url", default=DEFAULT_GOLDEN_DRAGON_URL)
+    parser.add_argument("--url", default=None)
     parser.add_argument("--hotel-id", default="golden-dragon")
+    parser.add_argument("--hotel-name", default=None)
+    parser.add_argument("--hotel-name-from-db", action="store_true")
     parser.add_argument("--profile-dir", default=str(_default_profile_dir()))
     parser.add_argument("--output-dir", default=str(_default_output_dir()))
     parser.add_argument("--pause-seconds", type=int, default=45)
@@ -36,8 +44,11 @@ def main() -> None:
     parser.add_argument("--multiplier-strategy", action="store_true")
     parser.add_argument("--calendar-days", type=int, default=90)
     parser.add_argument("--open-calendar", action="store_true")
+    parser.add_argument("--search-only", action="store_true")
     parser.add_argument("--headless", action="store_true")
     args = parser.parse_args()
+    if args.hotel_name_from_db:
+        args.hotel_name = _competitor_hotel_name_from_db(args.hotel_id)
 
     asyncio.run(run_probe(args))
 
@@ -59,7 +70,11 @@ async def run_probe(args: argparse.Namespace) -> None:
             locale="zh-CN",
         )
         page = context.pages[0] if context.pages else await context.new_page()
-        await page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
+        if args.hotel_name:
+            args.url = await _resolve_hotel_detail_url(page, args)
+        else:
+            args.url = args.url or DEFAULT_GOLDEN_DRAGON_URL
+            await page.goto(args.url, wait_until="domcontentloaded", timeout=60_000)
 
         print(
             "Ctrip page is open. If login, captcha, or consent is required, "
@@ -67,6 +82,21 @@ async def run_probe(args: argparse.Namespace) -> None:
         )
         await page.wait_for_timeout(args.pause_seconds * 1000)
         await _try_accept_common_popups(page)
+        if args.search_only:
+            json_path = output_dir / f"ctrip-{args.hotel_id}-search-{stamp}.json"
+            resolved_url = page.url if _looks_like_hotel_detail_url(page.url) else args.url
+            result = {
+                "hotel_id": args.hotel_id,
+                "hotel_name": args.hotel_name,
+                "source_url": args.url,
+                "resolved_hotel_url": resolved_url,
+                "resolved_ctrip_hotel_id": _ctrip_hotel_id_from_url(resolved_url),
+                "captured_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            json_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            await context.close()
+            print(json.dumps(result | {"json_path": str(json_path)}, ensure_ascii=False, indent=2))
+            return
         if args.multiplier_strategy:
             result = await _run_multiplier_strategy(page, args)
             json_path = output_dir / f"ctrip-{args.hotel_id}-multiplier-{stamp}.json"
@@ -109,7 +139,10 @@ async def run_probe(args: argparse.Namespace) -> None:
 
         result = {
             "hotel_id": args.hotel_id,
+            "hotel_name": args.hotel_name,
             "source_url": args.url,
+            "resolved_hotel_url": page.url,
+            "resolved_ctrip_hotel_id": _ctrip_hotel_id_from_url(page.url),
             "page_title": title,
             "captured_at": datetime.now().isoformat(timespec="seconds"),
             "screenshot_path": str(screenshot_path),
@@ -146,6 +179,184 @@ async def _try_accept_common_popups(page: Any) -> None:
             continue
         except Exception:
             continue
+
+
+async def _resolve_hotel_detail_url(page: Any, args: argparse.Namespace) -> str:
+    hotel_name = args.hotel_name.strip()
+    start_date = _start_date_from_url(args.url or "") or date.today()
+    if start_date < date.today():
+        start_date = date.today()
+    search_url = _hotel_search_url(hotel_name, start_date)
+    try:
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=60_000)
+    except PlaywrightTimeoutError:
+        print(f"Search navigation timed out for {hotel_name}; attempting current page.")
+    await page.wait_for_timeout(max(args.scan_delay_seconds, 5) * 1000)
+    await _try_accept_common_popups(page)
+
+    if _looks_like_hotel_detail_url(page.url):
+        return _url_with_dates(page.url, start_date, start_date + timedelta(days=1))
+
+    candidates = await _collect_hotel_result_links(page)
+    best = _best_hotel_result(candidates, hotel_name)
+    if best:
+        detail_url = _url_with_dates(best["href"], start_date, start_date + timedelta(days=1))
+        try:
+            await page.goto(detail_url, wait_until="domcontentloaded", timeout=60_000)
+        except PlaywrightTimeoutError:
+            print(f"Detail navigation timed out for {hotel_name}; attempting current page.")
+        await page.wait_for_timeout(4000)
+        await _try_accept_common_popups(page)
+        return page.url if _looks_like_hotel_detail_url(page.url) else detail_url
+
+    clicked = await _click_hotel_result_card(page, hotel_name)
+    if clicked:
+        await page.wait_for_timeout(6000)
+        if _looks_like_hotel_detail_url(page.url):
+            return _url_with_dates(page.url, start_date, start_date + timedelta(days=1))
+        for candidate_page in page.context.pages:
+            if _looks_like_hotel_detail_url(candidate_page.url):
+                await candidate_page.bring_to_front()
+                return _url_with_dates(candidate_page.url, start_date, start_date + timedelta(days=1))
+
+    if not best:
+        screenshot_path = Path(args.output_dir) / f"ctrip-{args.hotel_id}-search-failed.png"
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        raise RuntimeError(f"Could not resolve Ctrip hotel page for {hotel_name}. Screenshot: {screenshot_path}")
+
+
+async def _collect_hotel_result_links(page: Any) -> list[dict[str, str]]:
+    try:
+        links = await page.locator("a").evaluate_all(
+            """
+            (anchors) => anchors.map((anchor) => ({
+              text: (anchor.innerText || anchor.textContent || '').trim(),
+              href: anchor.href || ''
+            })).filter((item) => item.href)
+            """
+        )
+    except Exception:
+        return []
+    results = []
+    seen = set()
+    for link in links:
+        href = link.get("href", "")
+        text = re.sub(r"\s+", " ", link.get("text", "")).strip()
+        if not _looks_like_hotel_detail_url(href):
+            continue
+        key = (href, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({"href": href, "text": text})
+    return results
+
+
+def _best_hotel_result(candidates: list[dict[str, str]], hotel_name: str) -> dict[str, str] | None:
+    normalized_target = _normalize_hotel_name(hotel_name)
+    best: tuple[int, dict[str, str]] | None = None
+    for candidate in candidates:
+        normalized_text = _normalize_hotel_name(candidate.get("text", ""))
+        href = candidate.get("href", "")
+        score = 0
+        if normalized_target and normalized_target in normalized_text:
+            score += 100
+        if normalized_text and normalized_text in normalized_target:
+            score += 70
+        for token in _hotel_name_tokens(hotel_name):
+            if token in normalized_text:
+                score += 20
+        if "hotelId=" in href or re.search(r"/hotels/(?:detail/)?\d+", href):
+            score += 5
+        if score <= 0:
+            continue
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1] if best else None
+
+
+async def _click_hotel_result_card(page: Any, hotel_name: str) -> bool:
+    target_tokens = _hotel_name_tokens(hotel_name)
+    if not target_tokens:
+        return False
+    try:
+        return bool(
+            await page.evaluate(
+                """
+                (tokens) => {
+                  const normalize = (value) => String(value || '')
+                    .toLowerCase()
+                    .replace(/[\\s()（）·・\\-_/|,，.。酒店宾馆旅店澳門澳门]+/g, '');
+                  const normalizedTokens = tokens.map(normalize).filter(Boolean);
+                  const elements = Array.from(document.querySelectorAll('body *'));
+                  const matched = elements
+                    .filter((el) => {
+                      const text = normalize(el.innerText || el.textContent || '');
+                      return text && normalizedTokens.some((token) => text.includes(token));
+                    })
+                    .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length)[0];
+                  if (!matched) return false;
+                  let card = matched;
+                  for (let index = 0; index < 8 && card.parentElement; index += 1) {
+                    const text = card.innerText || '';
+                    if (text.includes('查看详情') || text.includes('选择房间')) break;
+                    card = card.parentElement;
+                  }
+                  const controls = Array.from(card.querySelectorAll('button, a'));
+                  const control = controls.find((item) => {
+                    const text = item.innerText || item.textContent || '';
+                    return text.includes('查看详情') || text.includes('选择房间');
+                  }) || matched;
+                  control.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window
+                  }));
+                  return true;
+                }
+                """,
+                target_tokens,
+            )
+        )
+    except Exception:
+        return False
+
+
+def _hotel_search_url(hotel_name: str, check_in: date) -> str:
+    check_out = check_in + timedelta(days=1)
+    query = {
+        "cityEnName": "Macau",
+        "cityId": "59",
+        "checkIn": check_in.isoformat(),
+        "checkOut": check_out.isoformat(),
+        "adult": "1",
+        "children": "0",
+        "crn": "1",
+        "curr": "CNY",
+        "barcurr": "CNY",
+        "keyword": hotel_name,
+    }
+    return "https://hotels.ctrip.com/hotels/list?" + urlencode(query)
+
+
+def _normalize_hotel_name(value: str) -> str:
+    return re.sub(r"[\s()（）·・\-_/|,，.。酒店宾馆旅店澳門澳门]+", "", value.lower())
+
+
+def _hotel_name_tokens(value: str) -> list[str]:
+    cleaned = re.sub(r"[\s()（）·・\-_/|,，.。]+", "", value)
+    tokens = [cleaned]
+    for word in ["澳门", "澳門", "酒店", "宾馆", "旅店"]:
+        cleaned = cleaned.replace(word, "")
+    if cleaned:
+        tokens.append(cleaned)
+    return [token.lower() for token in tokens if token]
+
+
+def _looks_like_hotel_detail_url(url: str) -> bool:
+    return "hotels.ctrip.com" in url and (
+        "/hotels/detail" in url or bool(re.search(r"/hotels/\d+", url)) or "hotelId=" in url
+    )
 
 
 async def _scroll_for_lazy_content(page: Any) -> None:
@@ -201,7 +412,10 @@ async def _scan_daily_room_rates(page: Any, args: argparse.Namespace) -> dict[st
         )
     return {
         "hotel_id": args.hotel_id,
+        "hotel_name": args.hotel_name,
         "source_url": args.url,
+        "resolved_hotel_url": page.url,
+        "resolved_ctrip_hotel_id": _ctrip_hotel_id_from_url(page.url),
         "captured_at": datetime.now().isoformat(timespec="seconds"),
         "daily_rates": daily_rates,
     }
@@ -228,7 +442,10 @@ async def _run_multiplier_strategy(page: Any, args: argparse.Namespace) -> dict[
 
     return {
         "hotel_id": args.hotel_id,
+        "hotel_name": args.hotel_name,
         "source_url": args.url,
+        "resolved_hotel_url": page.url,
+        "resolved_ctrip_hotel_id": _ctrip_hotel_id_from_url(page.url),
         "captured_at": datetime.now().isoformat(timespec="seconds"),
         "strategy": "ctrip_multiplier",
         "weekday_sample": samples.get("weekday"),
@@ -575,6 +792,22 @@ def _default_output_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "ctrip-rpa-probes"
 
 
+def _competitor_hotel_name_from_db(hotel_id: str) -> str:
+    if psycopg is None:
+        raise RuntimeError("psycopg is required for --hotel-name-from-db")
+    database_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://hotel_rms:hotel_rms_dev@localhost:5432/hotel_rms",
+    )
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT name FROM competitor_hotels WHERE id = %s", (hotel_id,))
+            row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError(f"Unknown competitor hotel id: {hotel_id}")
+    return str(row[0])
+
+
 def _start_date_from_url(url: str) -> date | None:
     query = parse_qs(urlsplit(url).query)
     value = (query.get("checkIn") or [None])[0]
@@ -593,6 +826,15 @@ def _url_with_dates(url: str, check_in: date, check_out: date) -> str:
     query["checkOut"] = [check_out.isoformat()]
     encoded = urlencode(query, doseq=True)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, encoded, parts.fragment))
+
+
+def _ctrip_hotel_id_from_url(url: str) -> str | None:
+    query = parse_qs(urlsplit(url).query)
+    value = (query.get("hotelId") or query.get("hotelid") or [None])[0]
+    if value:
+        return value
+    match = re.search(r"/hotels/(?:detail/)?(\d+)", url)
+    return match.group(1) if match else None
 
 
 if __name__ == "__main__":
