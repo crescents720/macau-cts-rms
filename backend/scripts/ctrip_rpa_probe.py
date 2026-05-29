@@ -197,6 +197,12 @@ async def _resolve_hotel_detail_url(page: Any, args: argparse.Namespace) -> str:
     if _looks_like_hotel_detail_url(page.url):
         return _url_with_dates(page.url, start_date, start_date + timedelta(days=1))
 
+    await _submit_hotel_keyword_search(page, hotel_name)
+    await page.wait_for_timeout(max(args.scan_delay_seconds, 5) * 1000)
+    await _try_accept_common_popups(page)
+    if _looks_like_hotel_detail_url(page.url):
+        return _url_with_dates(page.url, start_date, start_date + timedelta(days=1))
+
     candidates = await _collect_hotel_result_links(page)
     best = _best_hotel_result(candidates, hotel_name)
     if best:
@@ -210,6 +216,8 @@ async def _resolve_hotel_detail_url(page: Any, args: argparse.Namespace) -> str:
         return page.url if _looks_like_hotel_detail_url(page.url) else detail_url
 
     clicked = await _click_hotel_result_card(page, hotel_name)
+    if not clicked:
+        clicked = await _scroll_and_click_hotel_result_card(page, hotel_name)
     if clicked:
         await page.wait_for_timeout(6000)
         if _looks_like_hotel_detail_url(page.url):
@@ -252,6 +260,53 @@ async def _collect_hotel_result_links(page: Any) -> list[dict[str, str]]:
     return results
 
 
+async def _submit_hotel_keyword_search(page: Any, hotel_name: str) -> bool:
+    try:
+        filled = await page.evaluate(
+            """
+            (hotelName) => {
+              const inputs = Array.from(document.querySelectorAll('input'));
+              const isVisible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const input = inputs.find((el) => {
+                const text = `${el.placeholder || ''} ${el.getAttribute('aria-label') || ''} ${el.value || ''}`;
+                return isVisible(el) && /酒店|品牌|位置|关键词|关键字|hotel|brand/i.test(text);
+              });
+              if (!input) return false;
+              const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+              setter.call(input, hotelName);
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              input.focus();
+              return true;
+            }
+            """,
+            hotel_name,
+        )
+        if not filled:
+            return False
+        await page.wait_for_timeout(800)
+        for selector in [
+            "text=搜索",
+            "button:has-text('搜索')",
+            "[role='button']:has-text('搜索')",
+        ]:
+            try:
+                locator = page.locator(selector).last
+                if await locator.count():
+                    await locator.click(timeout=2500, force=True)
+                    return True
+            except Exception:
+                continue
+        await page.keyboard.press("Enter")
+        return True
+    except Exception:
+        return False
+
+
 def _best_hotel_result(candidates: list[dict[str, str]], hotel_name: str) -> dict[str, str] | None:
     normalized_target = _normalize_hotel_name(hotel_name)
     best: tuple[int, dict[str, str]] | None = None
@@ -275,6 +330,15 @@ def _best_hotel_result(candidates: list[dict[str, str]], hotel_name: str) -> dic
     return best[1] if best else None
 
 
+async def _scroll_and_click_hotel_result_card(page: Any, hotel_name: str) -> bool:
+    for _ in range(10):
+        await page.evaluate("() => window.scrollBy(0, Math.floor(window.innerHeight * 0.8))")
+        await page.wait_for_timeout(1200)
+        if await _click_hotel_result_card(page, hotel_name):
+            return True
+    return False
+
+
 async def _click_hotel_result_card(page: Any, hotel_name: str) -> bool:
     target_tokens = _hotel_name_tokens(hotel_name)
     if not target_tokens:
@@ -289,30 +353,34 @@ async def _click_hotel_result_card(page: Any, hotel_name: str) -> bool:
                     .replace(/[\\s()（）·・\\-_/|,，.。酒店宾馆旅店澳門澳门]+/g, '');
                   const normalizedTokens = tokens.map(normalize).filter(Boolean);
                   const elements = Array.from(document.querySelectorAll('body *'));
-                  const matched = elements
-                    .filter((el) => {
-                      const text = normalize(el.innerText || el.textContent || '');
-                      return text && normalizedTokens.some((token) => text.includes(token));
-                    })
-                    .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length)[0];
-                  if (!matched) return false;
-                  let card = matched;
-                  for (let index = 0; index < 8 && card.parentElement; index += 1) {
-                    const text = card.innerText || '';
-                    if (text.includes('查看详情') || text.includes('选择房间')) break;
-                    card = card.parentElement;
+                  for (const matched of elements) {
+                    const text = normalize(matched.innerText || matched.textContent || '');
+                    if (!text || !normalizedTokens.some((token) => text.includes(token))) continue;
+                    let card = matched;
+                    for (let index = 0; index < 14 && card.parentElement; index += 1) {
+                      const cardText = card.innerText || '';
+                      if (
+                        (cardText.includes('查看详情') || cardText.includes('选择房间')) &&
+                        normalizedTokens.some((token) => normalize(cardText).includes(token))
+                      ) {
+                        const controls = Array.from(card.querySelectorAll('button, a, [role="button"]'));
+                        const control = controls.find((item) => {
+                          const itemText = item.innerText || item.textContent || '';
+                          return itemText.includes('查看详情') || itemText.includes('选择房间');
+                        });
+                        if (control) {
+                          control.dispatchEvent(new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            view: window
+                          }));
+                          return true;
+                        }
+                      }
+                      card = card.parentElement;
+                    }
                   }
-                  const controls = Array.from(card.querySelectorAll('button, a'));
-                  const control = controls.find((item) => {
-                    const text = item.innerText || item.textContent || '';
-                    return text.includes('查看详情') || text.includes('选择房间');
-                  }) || matched;
-                  control.dispatchEvent(new MouseEvent('click', {
-                    bubbles: true,
-                    cancelable: true,
-                    view: window
-                  }));
-                  return true;
+                  return false;
                 }
                 """,
                 target_tokens,
