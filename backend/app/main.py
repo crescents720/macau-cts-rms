@@ -222,6 +222,7 @@ class CtripCollectionRequest(BaseModel):
     hotel_ids: list[str] | None = None
     calendar_days: int = 90
     skip_import: bool = False
+    timeout_seconds: int = 3600
 
 
 class CtripCollectionJobRecord(BaseModel):
@@ -789,7 +790,15 @@ def start_ctrip_collection(
         calendar_days=request.calendar_days,
     )
     CTRIP_COLLECTION_JOBS[job.id] = job
-    background_tasks.add_task(_run_ctrip_collection_job, job.id, hotel_ids, request.calendar_days, request.skip_import)
+    timeout_seconds = min(max(request.timeout_seconds, 60), 7200)
+    background_tasks.add_task(
+        _run_ctrip_collection_job,
+        job.id,
+        hotel_ids,
+        request.calendar_days,
+        request.skip_import,
+        timeout_seconds,
+    )
     return job
 
 
@@ -806,6 +815,7 @@ def _run_ctrip_collection_job(
     hotel_ids: list[str] | None,
     calendar_days: int,
     skip_import: bool,
+    timeout_seconds: int,
 ) -> None:
     job = CTRIP_COLLECTION_JOBS[job_id]
     job.status = "running"
@@ -821,19 +831,28 @@ def _run_ctrip_collection_job(
     if skip_import:
         command.append("--skip-import")
 
-    completed = subprocess.run(
-        command,
-        cwd=backend_dir,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    job.exit_code = completed.returncode
-    job.stdout_tail = completed.stdout[-5000:]
-    job.stderr_tail = completed.stderr[-5000:]
-    job.finished_at = datetime.now().isoformat(timespec="seconds")
-    job.status = "completed" if completed.returncode == 0 else "failed"
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=backend_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+        )
+        job.exit_code = completed.returncode
+        job.stdout_tail = completed.stdout[-5000:]
+        job.stderr_tail = completed.stderr[-5000:]
+        job.status = "completed" if completed.returncode == 0 else "failed"
+    except subprocess.TimeoutExpired as exc:
+        job.exit_code = None
+        job.stdout_tail = (exc.stdout or "")[-5000:] if isinstance(exc.stdout, str) else ""
+        job.stderr_tail = (exc.stderr or "")[-5000:] if isinstance(exc.stderr, str) else ""
+        job.stderr_tail = (job.stderr_tail + f"\nCtrip collection timed out after {timeout_seconds} seconds.").strip()
+        job.status = "failed"
+    finally:
+        job.finished_at = datetime.now().isoformat(timespec="seconds")
 
 
 @app.post("/external-events/{event_id}/status", response_model=ExternalEventRecord)
