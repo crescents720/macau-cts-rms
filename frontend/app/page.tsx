@@ -979,8 +979,8 @@ export default function Dashboard() {
                     <stop offset="95%" stopColor="#357a68" stopOpacity={0.02} />
                   </linearGradient>
                   <linearGradient id="competitorRangeGradient" x1="0" x2="0" y1="0" y2="1">
-                    <stop offset="5%" stopColor="#5279a7" stopOpacity={0.22} />
-                    <stop offset="95%" stopColor="#5279a7" stopOpacity={0.05} />
+                    <stop offset="5%" stopColor="#6f8faa" stopOpacity={0.34} />
+                    <stop offset="95%" stopColor="#6f8faa" stopOpacity={0.12} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid stroke="#d8ded8" strokeDasharray="3 3" />
@@ -1024,8 +1024,9 @@ export default function Dashboard() {
                   dataKey="competitorAverageRate"
                   dot={false}
                   name={copy.competitorAverageRate}
-                  stroke="#5279a7"
-                  strokeWidth={2}
+                  stroke="#8ba4b8"
+                  strokeOpacity={0.82}
+                  strokeWidth={1.8}
                   type="monotone"
                 />
                 <Line
