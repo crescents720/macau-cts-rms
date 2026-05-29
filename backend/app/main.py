@@ -53,6 +53,9 @@ class PriceRecommendation(BaseModel):
     event_names: list[str] = []
     event_logic: list[str] = []
     competitor_market_rate: float | None = None
+    competitor_average_rate: float | None = None
+    competitor_min_rate: float | None = None
+    competitor_max_rate: float | None = None
     competitor_adjustment_amount: int = 0
     competitor_logic: list[str] = []
     change_percent: float
@@ -917,7 +920,7 @@ def list_recommendations(
             room_type=room_type,
             historical_base_rates=base_rates,
             historical_average_rate=historical_rates.get(stay_date),
-            competitor_market_rate=competitor_rates.get(stay_date),
+            competitor_market=competitor_rates.get(stay_date),
         )
         for stay_date in stay_dates
     ]
@@ -1427,7 +1430,7 @@ def _build_recommendation(
     room_type: RoomType,
     historical_base_rates: dict[str, float],
     historical_average_rate: float | None = None,
-    competitor_market_rate: float | None = None,
+    competitor_market: dict[str, float] | None = None,
 ) -> PriceRecommendation:
     weekday = stay_date.weekday()
     is_weekend = weekday in {4, 5}
@@ -1463,6 +1466,7 @@ def _build_recommendation(
     rate_before_events = base_rate * demand_multiplier
     event_adjustment_amount = _round_rate(rate_before_events * event_premium_rate)
     recommended_rate = _round_rate(rate_before_events + event_adjustment_amount)
+    competitor_market_rate = competitor_market["median"] if competitor_market else None
     competitor_adjustment_amount, competitor_logic = _competitor_adjustment(
         recommended_rate=recommended_rate,
         competitor_market_rate=competitor_market_rate,
@@ -1525,6 +1529,15 @@ def _build_recommendation(
         event_logic=combined_event_logic,
         competitor_market_rate=round(competitor_market_rate, 2)
         if competitor_market_rate is not None
+        else None,
+        competitor_average_rate=round(competitor_market["average"], 2)
+        if competitor_market
+        else None,
+        competitor_min_rate=round(competitor_market["min"], 2)
+        if competitor_market
+        else None,
+        competitor_max_rate=round(competitor_market["max"], 2)
+        if competitor_market
         else None,
         competitor_adjustment_amount=competitor_adjustment_amount,
         competitor_logic=competitor_logic,
@@ -1613,20 +1626,25 @@ def _competitor_market_rates(
     hotel_id: str,
     room_type_id: str,
     stay_dates: list[date],
-) -> dict[date, float]:
+) -> dict[date, dict[str, float]]:
     if not stay_dates:
         return {}
 
     placeholders = ", ".join(["%s"] * len(stay_dates))
     query = f"""
-        SELECT o.stay_date, o.price
-        FROM competitor_rate_observations o
-        JOIN room_type_competitor_mappings m
-          ON m.competitor_room_type_id = o.competitor_room_type_id
-        WHERE m.hotel_id = %s
-          AND m.room_type_id = %s
-          AND o.stay_date IN ({placeholders})
-          AND o.price IS NOT NULL
+        SELECT latest.stay_date, latest.price
+        FROM (
+            SELECT DISTINCT ON (o.competitor_room_type_id, o.stay_date)
+                   o.competitor_room_type_id, o.stay_date, o.price
+            FROM competitor_rate_observations o
+            JOIN room_type_competitor_mappings m
+              ON m.competitor_room_type_id = o.competitor_room_type_id
+            WHERE m.hotel_id = %s
+              AND m.room_type_id = %s
+              AND o.stay_date IN ({placeholders})
+              AND o.price IS NOT NULL
+            ORDER BY o.competitor_room_type_id, o.stay_date, o.collected_at DESC
+        ) latest
     """
     params = [hotel_id, room_type_id, *stay_dates]
 
@@ -1642,7 +1660,12 @@ def _competitor_market_rates(
     for stay_date, price in rows:
         prices_by_date.setdefault(stay_date, []).append(float(price) * 1.1)
     return {
-        stay_date: median(prices)
+        stay_date: {
+            "median": median(prices),
+            "average": mean(prices),
+            "min": min(prices),
+            "max": max(prices),
+        }
         for stay_date, prices in prices_by_date.items()
         if prices
     }

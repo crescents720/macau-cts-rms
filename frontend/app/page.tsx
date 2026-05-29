@@ -17,6 +17,7 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Legend,
   Line,
   ResponsiveContainer,
   Tooltip,
@@ -54,6 +55,9 @@ type Recommendation = {
   event_names: string[];
   event_logic: string[];
   competitor_market_rate: number | null;
+  competitor_average_rate: number | null;
+  competitor_min_rate: number | null;
+  competitor_max_rate: number | null;
   competitor_adjustment_amount: number;
   competitor_logic: string[];
   change_percent: number;
@@ -66,6 +70,8 @@ type ChartPoint = {
   currentRate: number;
   recommendedRate: number;
   historicalAverageRate: number | null;
+  competitorAverageRate: number | null;
+  competitorRateRange: [number, number] | null;
   confidence: number;
   reason: string;
   source: Recommendation;
@@ -317,6 +323,8 @@ const copy = {
   eventLogic: "\u4e8b\u4ef6\u8c03\u4ef7\u903b\u8f91",
   competitorLogic: "\u7ade\u54c1\u4ef7\u683c\u903b\u8f91",
   competitorMarketRate: "\u7ade\u54c1\u4e2d\u4f4d\u4ef7",
+  competitorAverageRate: "\u7ade\u54c1\u5e73\u5747\u4ef7",
+  competitorRateRange: "\u7ade\u54c1\u62a5\u4ef7\u533a\u95f4",
   competitorAdjustment: "\u7ade\u54c1\u8c03\u6574",
   noEventPremium: "\u5f53\u65e5\u65e0\u5185\u5730/\u6fb3\u95e8\u91cd\u5927\u5047\u671f\u6ea2\u4ef7",
   currentRate: "\u57fa\u7840\u623f\u4ef7",
@@ -380,6 +388,11 @@ export default function Dashboard() {
     currentRate: item.current_rate,
     recommendedRate: item.recommended_rate,
     historicalAverageRate: item.historical_average_rate,
+    competitorAverageRate: item.competitor_average_rate,
+    competitorRateRange:
+      item.competitor_min_rate !== null && item.competitor_max_rate !== null
+        ? [item.competitor_min_rate, item.competitor_max_rate]
+        : null,
     confidence: item.confidence,
     reason: item.reasons.join("\uff1b"),
     source: item
@@ -965,6 +978,10 @@ export default function Dashboard() {
                     <stop offset="5%" stopColor="#357a68" stopOpacity={0.28} />
                     <stop offset="95%" stopColor="#357a68" stopOpacity={0.02} />
                   </linearGradient>
+                  <linearGradient id="competitorRangeGradient" x1="0" x2="0" y1="0" y2="1">
+                    <stop offset="5%" stopColor="#5279a7" stopOpacity={0.22} />
+                    <stop offset="95%" stopColor="#5279a7" stopOpacity={0.05} />
+                  </linearGradient>
                 </defs>
                 <CartesianGrid stroke="#d8ded8" strokeDasharray="3 3" />
                 <XAxis
@@ -976,6 +993,22 @@ export default function Dashboard() {
                 />
                 <YAxis tickLine={false} axisLine={false} width={48} />
                 <Tooltip />
+                <Legend
+                  align="right"
+                  iconType="plainline"
+                  verticalAlign="top"
+                  wrapperStyle={{ paddingBottom: 12 }}
+                />
+                <Area
+                  activeDot={false}
+                  connectNulls={false}
+                  dataKey="competitorRateRange"
+                  dot={false}
+                  fill="url(#competitorRangeGradient)"
+                  name={copy.competitorRateRange}
+                  stroke="none"
+                  type="monotone"
+                />
                 <Area
                   activeDot={{ r: 7, cursor: "pointer" }}
                   dataKey="recommendedRate"
@@ -984,6 +1017,16 @@ export default function Dashboard() {
                   stroke="#357a68"
                   fill="url(#rateGradient)"
                   strokeWidth={2}
+                />
+                <Line
+                  activeDot={{ r: 5 }}
+                  connectNulls={false}
+                  dataKey="competitorAverageRate"
+                  dot={false}
+                  name={copy.competitorAverageRate}
+                  stroke="#5279a7"
+                  strokeWidth={2}
+                  type="monotone"
                 />
                 <Line
                   activeDot={{ r: 6 }}
@@ -1707,6 +1750,27 @@ export default function Dashboard() {
                 <strong>
                   {selectedRecommendation.competitor_market_rate
                     ? `MOP ${Math.round(selectedRecommendation.competitor_market_rate)}`
+                  : "-"}
+                </strong>
+              </div>
+              <div>
+                <span>{copy.competitorRateRange}</span>
+                <strong>
+                  {selectedRecommendation.competitor_min_rate &&
+                  selectedRecommendation.competitor_max_rate
+                    ? `MOP ${Math.round(selectedRecommendation.competitor_min_rate)}-${Math.round(
+                        selectedRecommendation.competitor_max_rate
+                      )}`
+                    : "-"}
+                </strong>
+              </div>
+            </div>
+            <div className="modalGrid historical">
+              <div>
+                <span>{copy.competitorAverageRate}</span>
+                <strong>
+                  {selectedRecommendation.competitor_average_rate
+                    ? `MOP ${Math.round(selectedRecommendation.competitor_average_rate)}`
                     : "-"}
                 </strong>
               </div>
